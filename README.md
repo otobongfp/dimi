@@ -1,6 +1,6 @@
 # Dimi
 
-A private, local-first AI runtime — offline document Q&A, file operations, and drafting, running entirely on-device. See [`dimi-docs/`](../dimi-docs) for the full architecture.
+A private, local-first AI runtime — offline document Q&A, file operations, and drafting, running entirely on-device.
 
 Layout: `runtime/` is the `dimi-runtime` crate (kernel, services, pipelines) and `crates/isfi/` is the filesystem-index library, both standalone. `apps/workspace/` is the desktop app — `src-tauri/` (the `dimi` Tauri crate) and `src/` (the React frontend).
 
