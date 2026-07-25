@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐙</text></svg>" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dimi</title>
+  <style>
+    /* Plain CSS, not Tailwind — index.css only loads once main.tsx runs,
+         so this has to be self-contained. React's createRoot().render()
+         replaces #root's children wholesale once it mounts, so this static
+         splash is safely swapped out rather than left behind. Exists so
+         the window is never a truly blank white rectangle during the
+         Vite/React cold-load gap (index.html previously had nothing here
+         at all), which is what a dev-mode restart-heavy session makes
+         visible far more often than a normal single launch would. */
+    html,
+    body,
+    #root {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      background: #faf1e1;
+      color: #241a14;
+      font-family:
+        -apple-system, BlinkMacSystemFont, "Inter", ui-sans-serif, sans-serif;
+    }
+
+    #root {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .boot-splash {
+      width: 100%;
+      max-width: 28rem;
+      margin: 0 1rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(247, 222, 212, 0.6);
+      background: #fff;
+      padding: 2rem;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .boot-splash .icon {
+      margin: 0 auto;
+      display: flex;
+      height: 3.5rem;
+      width: 3.5rem;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0.75rem;
+      background: #f7ded4;
+      font-size: 1.75rem;
+    }
+
+    .boot-splash h1 {
+      margin: 1.25rem 0 0.25rem;
+      font-size: 1.5rem;
+      font-weight: 800;
+    }
+
+    .boot-splash p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: #8b7c6e;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root">
+    <div class="boot-splash">
+      <div class="icon">🐙</div>
+      <h1>Starting Dimi</h1>
+      <p>Loading…</p>
+      <p id="error-log" style="color: red; font-size: 12px; text-align: left; margin-top: 20px; white-space: pre-wrap;">
+      </p>
+    </div>
+  </div>
+  <script>
+    window.onerror = function (message, source, lineno, colno, error) {
+      var el = document.getElementById('error-log');
+      if (el) el.innerText += '\nError: ' + message;
+      return false;
+    };
+    window.onunhandledrejection = function (event) {
+      var el = document.getElementById('error-log');
+      if (el) el.innerText += '\nPromise Rejection: ' + event.reason;
+    };
+  </script>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>

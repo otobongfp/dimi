@@ -1,0 +1,6 @@
+[env]
+CFLAGS = { value = "", force = true }
+CXXFLAGS = { value = "", force = true }
+
+[build]
+jobs = 2

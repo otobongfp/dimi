@@ -1,0 +1,26 @@
+# Minimal internal plugin for Plugin SDK contract testing, per
+# 16-roadmap.md's Phase 1 exit criteria: "Plugin SDK exists and is
+# exercised by one minimal internal test plugin for contract testing —
+# not a full domain plugin." It declares no tools and no lifecycle hooks
+# on purpose; it exists to exercise manifest parsing, the
+# discover/install/enable/disable/uninstall lifecycle, and
+# WorkspaceService.from_plugin's suggestedFolders seeding, not to ship
+# real functionality.
+name: dimi-test-plugin
+displayName: Dimi Test Plugin
+version: 1.0.0
+author: Dimi Core Team
+description: Internal contract-testing plugin — not a domain plugin.
+icon: test.svg
+
+permissions:
+  capabilities:
+    - filesystem
+  suggestedFolders:
+    - path: "~/Documents"
+      recommended: false
+
+knowledge: []
+tools: []
+commands: []
+pages: []

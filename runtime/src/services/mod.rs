@@ -1,0 +1,15 @@
+pub mod context;
+pub mod document;
+pub mod embedding;
+pub mod filesystem;
+pub mod inference;
+pub mod knowledge;
+pub mod model_manager;
+pub mod ocr;
+pub mod plugin_manager;
+pub mod scheduler;
+pub mod storage;
+pub mod telemetry;
+pub mod tool;
+pub mod voice;
+pub mod workspace;
