@@ -1,6 +1,7 @@
 [env]
 CFLAGS = { value = "", force = true }
 CXXFLAGS = { value = "", force = true }
+MACOSX_DEPLOYMENT_TARGET = { value = "11.0", force = true }
 
 [build]
-jobs = 2
+jobs = 4

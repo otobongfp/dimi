@@ -24,9 +24,9 @@ use crate::services::scheduler::TokioSchedulerService;
 use crate::services::storage::SqliteStorageEngine;
 use crate::services::telemetry::DefaultTelemetryService;
 use crate::services::tool::{
-    CalculatorTool, ConvertFileTool, CopyFileTool, DefaultToolEngine, FileSearchTool,
-    FindFilesTool, ListDirectoryTool, ListLibrariesTool, MoveFileTool, ReadFileTool,
-    SearchFilesTool, ToolEngine, WriteFileTool,
+    CalculatorTool, ConvertFileTool, CopyFileTool, DefaultToolEngine, DeleteFileTool,
+    FileSearchTool, FindFilesTool, ListDirectoryTool, ListLibrariesTool, MoveFileTool,
+    ReadFileTool, RenameFileTool, SearchFilesTool, ToolEngine, WriteFileTool,
 };
 use crate::services::voice::StubVoiceEngine;
 use crate::services::workspace::SqliteWorkspaceService;
@@ -45,6 +45,7 @@ pub struct Runtime {
     pub model_manager: Arc<SqliteModelManager>,
     pub scheduler: Arc<TokioSchedulerService>,
     pub indexing_repos: Arc<Mutex<HashSet<crate::common::RepositoryId>>>,
+    pub pending_confirmations: Arc<crate::kernel::confirmations::PendingConfirmations>,
 }
 
 impl Runtime {
@@ -157,6 +158,7 @@ impl Runtime {
             model_manager,
             scheduler,
             indexing_repos: Arc::new(Mutex::new(HashSet::new())),
+            pending_confirmations: Arc::new(crate::kernel::confirmations::PendingConfirmations::new()),
         })
     }
 
@@ -353,6 +355,18 @@ async fn register_remaining_services(
         .ok();
     tool_engine
         .register(Box::new(CopyFileTool::new(
+            repositories.clone(),
+            container.filesystem()?,
+        )))
+        .ok();
+    tool_engine
+        .register(Box::new(DeleteFileTool::new(
+            repositories.clone(),
+            container.filesystem()?,
+        )))
+        .ok();
+    tool_engine
+        .register(Box::new(RenameFileTool::new(
             repositories.clone(),
             container.filesystem()?,
         )))

@@ -1,6 +1,16 @@
-# Dimi
+<p align="center">
+  <img src="apps/workspace/src-tauri/icons/icon.png" width="120" alt="Dimi logo" />
+</p>
 
-A private, local-first AI runtime — offline document Q&A, file operations, and drafting, running entirely on-device.
+<h1 align="center">Dimi</h1>
+
+<p align="center">
+  A private, local-first AI runtime that runs on your desktop and provides inference without internet connectivity — offline document Q&A, file operations, and drafting, running entirely on-device.
+</p>
+
+<p align="center">
+  Read more: <a href="https://otobongpeter.medium.com/the-case-for-local-and-sovereign-ai-b1d516a3f2d2">The Case for Local and Sovereign AI</a>
+</p>
 
 Layout: `runtime/` is the `dimi-runtime` crate (kernel, services, pipelines) and `crates/isfi/` is the filesystem-index library, both standalone. `apps/workspace/` is the desktop app — `src-tauri/` (the `dimi` Tauri crate) and `src/` (the React frontend).
 

@@ -12,21 +12,59 @@ import type {
   ConversationSummary,
   MessageRow,
   MessageSource,
+  ToolConfirmationMessage,
   WorkspaceSummary,
 } from "@/types";
 
 const FILE_LINK_SCHEME = "dimi-file://";
 
-function toChatMessage(row: MessageRow): ChatMessage {
-  let sources: MessageSource[] | undefined;
-  if (row.sources) {
-    try {
-      sources = JSON.parse(row.sources) as MessageSource[];
-    } catch {
-      sources = undefined;
+// Ordinary rows map 1:1; `role:"tool"` rows are structured JSON that either
+// becomes an approval card (`kind:"tool_confirmation"`) or gets merged into
+// its matching card as a resolution (`kind:"tool_confirmation_resolved"`) —
+// two DB rows can collapse into one rendered message, so this can't be a
+// simple per-row map.
+function toChatMessages(rows: MessageRow[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  const cardsByConfirmationId = new Map<string, ToolConfirmationMessage>();
+
+  for (const row of rows) {
+    if (row.role === "tool") {
+      let parsed: Record<string, unknown> | undefined;
+      try {
+        parsed = JSON.parse(row.content);
+      } catch {
+        parsed = undefined;
+      }
+      if (parsed?.kind === "tool_confirmation") {
+        const card: ToolConfirmationMessage = {
+          role: "tool",
+          kind: "tool_confirmation",
+          confirmationId: String(parsed.confirmation_id),
+          tool: String(parsed.tool),
+          summary: String(parsed.summary),
+          resolution: null,
+        };
+        cardsByConfirmationId.set(card.confirmationId, card);
+        messages.push(card);
+      } else if (parsed?.kind === "tool_confirmation_resolved") {
+        const card = cardsByConfirmationId.get(String(parsed.confirmation_id));
+        if (card) card.resolution = { approved: Boolean(parsed.approved) };
+      }
+      continue;
     }
+
+    let sources: MessageSource[] | undefined;
+    if (row.sources) {
+      try {
+        sources = JSON.parse(row.sources) as MessageSource[];
+      } catch {
+        sources = undefined;
+      }
+    }
+    messages.push({ role: row.role, content: row.content, sources });
   }
-  return { role: row.role, content: row.content, sources };
+
+  return messages;
 }
 
 function linkifySources(
@@ -392,7 +430,7 @@ export function Chat({
     setPicking(false);
     setActiveConversationId(id);
     const rows = await dimi.messages.list(id);
-    setMessages(rows.map(toChatMessage));
+    setMessages(toChatMessages(rows));
   }
 
   function startPicking(preselect: string[]) {
@@ -481,12 +519,38 @@ export function Chat({
     setSending(true);
 
     let unlisten: (() => void) | undefined;
+    let unlistenConfirmation: (() => void) | undefined;
     try {
       unlisten = await dimi.events.onToken((token) => {
         setMessages((prev) => {
           const next = [...prev];
           const last = next[next.length - 1];
           next[next.length - 1] = { ...last, content: last.content + token };
+          return next;
+        });
+      });
+
+      // The chat-turn command doesn't resolve until the whole turn (including
+      // any approval pause) finishes, so this card has to appear live rather
+      // than waiting for the post-turn reload below. Inserted just *before*
+      // the trailing streaming placeholder so that placeholder stays the
+      // array's last element — onToken above always appends to `prev[last]`.
+      unlistenConfirmation = await dimi.events.on<{
+        confirmation_id: string;
+        tool: string;
+        summary: string;
+      }>("tool:confirmation_required", (payload) => {
+        setMessages((prev) => {
+          const card: ToolConfirmationMessage = {
+            role: "tool",
+            kind: "tool_confirmation",
+            confirmationId: payload.confirmation_id,
+            tool: payload.tool,
+            summary: payload.summary,
+            resolution: null,
+          };
+          const next = [...prev];
+          next.splice(next.length - 1, 0, card);
           return next;
         });
       });
@@ -500,7 +564,7 @@ export function Chat({
       // The streamed tokens above don't carry the assistant message's
       // structured `sources` — reload from storage now that it's persisted.
       const rows = await dimi.messages.list(activeConversationId);
-      setMessages(rows.map(toChatMessage));
+      setMessages(toChatMessages(rows));
       await refreshConversations();
     } catch (e) {
       setError(String(e));
@@ -511,7 +575,32 @@ export function Chat({
       });
     } finally {
       if (unlisten) unlisten();
+      if (unlistenConfirmation) unlistenConfirmation();
       setSending(false);
+    }
+  }
+
+  async function respondToToolConfirmation(confirmationId: string, approved: boolean) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.role === "tool" && m.confirmationId === confirmationId
+          ? { ...m, resolution: { approved } }
+          : m,
+      ),
+    );
+    try {
+      await dimi.chat.respondToConfirmation(confirmationId, approved);
+    } catch {
+      // Stale confirmation — a previous session's card, or one past its
+      // timeout. Reactive handling here is simpler than backend cleanup
+      // machinery for a single-process local app.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "tool" && m.confirmationId === confirmationId
+            ? { ...m, resolution: null, expired: true }
+            : m,
+        ),
+      );
     }
   }
 
@@ -700,6 +789,46 @@ export function Chat({
                   </p>
                 )}
                 {messages.map((m, i) => {
+                  if (m.role === "tool") {
+                    return (
+                      <div key={i} className="flex flex-col items-start mb-4">
+                        <div className="max-w-[80%] rounded-2xl border border-blush/60 bg-white px-5 py-4 text-sm text-ink shadow-sm">
+                          <p className="font-medium">{m.summary}</p>
+                          {m.expired ? (
+                            <p className="mt-2 text-xs text-ink-muted">
+                              This request is no longer active — ask again.
+                            </p>
+                          ) : m.resolution ? (
+                            <p className="mt-2 text-xs text-ink-muted">
+                              {m.resolution.approved ? "Approved" : "Declined"}
+                            </p>
+                          ) : (
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  respondToToolConfirmation(m.confirmationId, true)
+                                }
+                                className="rounded-lg bg-terracotta px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  respondToToolConfirmation(m.confirmationId, false)
+                                }
+                                className="rounded-lg border border-ink/30 bg-white px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-blush/40"
+                              >
+                                Deny
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   const parts = parseMessageParts(m.content);
                   const isAssistant = m.role !== "user";
                   const isStreaming = sending && i === messages.length - 1;

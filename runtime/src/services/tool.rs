@@ -6,6 +6,18 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult>;
+
+    /// Whether this tool mutates the user's filesystem and must pause for
+    /// user approval before `execute` runs. False (read-only) by default.
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    /// Plain-language description of what a pending call will do, shown in
+    /// the approval prompt — never the raw tool name or JSON args.
+    fn confirmation_summary(&self, _args: &serde_json::Value) -> String {
+        format!("Run {}", self.name())
+    }
 }
 
 #[async_trait]
@@ -13,6 +25,8 @@ pub trait ToolEngine: Send + Sync {
     fn register(&self, tool: Box<dyn Tool>) -> Result<()>;
     async fn invoke(&self, name: &str, args: serde_json::Value) -> Result<ToolResult>;
     fn list_schemas(&self) -> Vec<ToolSchema>;
+    fn requires_confirmation(&self, name: &str) -> bool;
+    fn confirmation_summary(&self, name: &str, args: &serde_json::Value) -> String;
 }
 
 pub struct StubToolEngine;
@@ -27,6 +41,12 @@ impl ToolEngine for StubToolEngine {
     }
     fn list_schemas(&self) -> Vec<ToolSchema> {
         Vec::new()
+    }
+    fn requires_confirmation(&self, _name: &str) -> bool {
+        false
+    }
+    fn confirmation_summary(&self, name: &str, _args: &serde_json::Value) -> String {
+        format!("Run {name}")
     }
 }
 
@@ -87,6 +107,22 @@ impl ToolEngine for DefaultToolEngine {
             .read()
             .map(|guard| guard.values().map(|t| t.schema()).collect())
             .unwrap_or_default()
+    }
+
+    fn requires_confirmation(&self, name: &str) -> bool {
+        self.tools
+            .read()
+            .ok()
+            .and_then(|guard| guard.get(name).map(|t| t.requires_confirmation()))
+            .unwrap_or(false)
+    }
+
+    fn confirmation_summary(&self, name: &str, args: &serde_json::Value) -> String {
+        self.tools
+            .read()
+            .ok()
+            .and_then(|guard| guard.get(name).map(|t| t.confirmation_summary(args)))
+            .unwrap_or_else(|| format!("Run {name}"))
     }
 }
 
@@ -492,6 +528,10 @@ async fn resolve_scoped_path(root: &str, requested: &str) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+fn arg_str(args: &serde_json::Value, key: &str) -> String {
+    args.get(key).and_then(|v| v.as_str()).unwrap_or("?").to_string()
+}
+
 fn repository_and_path_args(args: &serde_json::Value) -> Result<(RepositoryId, String)> {
     let repository_id = args
         .get("repository_id")
@@ -712,6 +752,14 @@ impl Tool for WriteFileTool {
         }
     }
 
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!("Create or overwrite {}", arg_str(args, "path"))
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         let (repository_id, path) = repository_and_path_args(&args)?;
         let content = args
@@ -765,6 +813,14 @@ impl Tool for MoveFileTool {
                 "required": ["repository_id", "from", "to"],
             }),
         }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!("Move {} to {}", arg_str(args, "from"), arg_str(args, "to"))
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
@@ -829,6 +885,14 @@ impl Tool for CopyFileTool {
         }
     }
 
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!("Copy {} to {}", arg_str(args, "from"), arg_str(args, "to"))
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         let repository_id = args
             .get("repository_id")
@@ -849,6 +913,130 @@ impl Tool for CopyFileTool {
         let resolved_from = resolve_scoped_path(&repo.root, from).await?;
         let resolved_to = resolve_scoped_path(&repo.root, to).await?;
         self.filesystem.copy(&resolved_from, &resolved_to).await?;
+        Ok(ToolResult {
+            content: serde_json::json!({ "from": from, "to": to }),
+        })
+    }
+}
+
+pub struct DeleteFileTool {
+    repositories: Arc<RepositoryStore>,
+    filesystem: Arc<dyn FileSystemService>,
+}
+
+impl DeleteFileTool {
+    pub fn new(repositories: Arc<RepositoryStore>, filesystem: Arc<dyn FileSystemService>) -> Self {
+        Self {
+            repositories,
+            filesystem,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for DeleteFileTool {
+    fn name(&self) -> &str {
+        "delete_file"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "delete_file".to_string(),
+            description: "Permanently deletes a file (or a folder and everything in it) within a repository. `path` is relative to the repository root. This cannot be undone.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "repository_id": { "type": "string" },
+                    "path": { "type": "string" },
+                },
+                "required": ["repository_id", "path"],
+            }),
+        }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!("Delete {}", arg_str(args, "path"))
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        let (repository_id, path) = repository_and_path_args(&args)?;
+        let repo = self.repositories.get(repository_id).await?;
+        let resolved = resolve_scoped_path(&repo.root, &path).await?;
+        self.filesystem.delete(&resolved).await?;
+        Ok(ToolResult {
+            content: serde_json::json!({ "path": path, "abs_path": resolved.to_string_lossy() }),
+        })
+    }
+}
+
+pub struct RenameFileTool {
+    repositories: Arc<RepositoryStore>,
+    filesystem: Arc<dyn FileSystemService>,
+}
+
+impl RenameFileTool {
+    pub fn new(repositories: Arc<RepositoryStore>, filesystem: Arc<dyn FileSystemService>) -> Self {
+        Self {
+            repositories,
+            filesystem,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for RenameFileTool {
+    fn name(&self) -> &str {
+        "rename_file"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "rename_file".to_string(),
+            description: "Renames a file in place within a repository (same folder, new filename). For moving a file into a different folder, use move_file instead — they do the same thing under the hood, but the right name makes the intent clear. `from` and `to` are both paths relative to the repository root.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "repository_id": { "type": "string" },
+                    "from": { "type": "string" },
+                    "to": { "type": "string" },
+                },
+                "required": ["repository_id", "from", "to"],
+            }),
+        }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!("Rename {} to {}", arg_str(args, "from"), arg_str(args, "to"))
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        let repository_id = args
+            .get("repository_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DimiError::InvalidArgument("missing 'repository_id'".into()))?
+            .parse::<RepositoryId>()
+            .map_err(|e| DimiError::InvalidArgument(format!("bad repository_id: {e}")))?;
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DimiError::InvalidArgument("missing 'from'".into()))?;
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DimiError::InvalidArgument("missing 'to'".into()))?;
+
+        let repo = self.repositories.get(repository_id).await?;
+        let resolved_from = resolve_scoped_path(&repo.root, from).await?;
+        let resolved_to = resolve_scoped_path(&repo.root, to).await?;
+        self.filesystem.r#move(&resolved_from, &resolved_to).await?;
         Ok(ToolResult {
             content: serde_json::json!({ "from": from, "to": to }),
         })
@@ -1381,6 +1569,18 @@ impl Tool for ConvertFileTool {
         }
     }
 
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_summary(&self, args: &serde_json::Value) -> String {
+        format!(
+            "Convert {} to {}",
+            arg_str(args, "path"),
+            arg_str(args, "target_format").to_uppercase()
+        )
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         let (repository_id, path) = repository_and_path_args(&args)?;
         let target_format = args
@@ -1772,6 +1972,120 @@ mod copy_move_tests {
         assert_eq!(std::fs::read(root.join("Archive/draft.txt")).unwrap(), b"hello");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn delete_file_removes_it() {
+        let root = tempdir();
+        std::fs::write(root.join("draft.txt"), b"hello").unwrap();
+        let (repositories, repository) = repo_in(&root).await;
+        let filesystem = Arc::new(LocalFileSystemService::new(EventBus::new()));
+        let tool = DeleteFileTool::new(repositories, filesystem);
+
+        tool.execute(serde_json::json!({
+            "repository_id": repository.id.to_string(),
+            "path": "draft.txt",
+        }))
+        .await
+        .unwrap();
+
+        assert!(!root.join("draft.txt").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn delete_file_cannot_escape_the_repository_root() {
+        let root = tempdir();
+        let (repositories, repository) = repo_in(&root).await;
+        let filesystem = Arc::new(LocalFileSystemService::new(EventBus::new()));
+        let tool = DeleteFileTool::new(repositories, filesystem);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "repository_id": repository.id.to_string(),
+                "path": "../../etc/passwd",
+            }))
+            .await;
+
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn rename_file_renames_in_place() {
+        let root = tempdir();
+        std::fs::write(root.join("draft.txt"), b"hello").unwrap();
+        let (repositories, repository) = repo_in(&root).await;
+        let filesystem = Arc::new(LocalFileSystemService::new(EventBus::new()));
+        let tool = RenameFileTool::new(repositories, filesystem);
+
+        tool.execute(serde_json::json!({
+            "repository_id": repository.id.to_string(),
+            "from": "draft.txt",
+            "to": "final.txt",
+        }))
+        .await
+        .unwrap();
+
+        assert!(!root.join("draft.txt").exists(), "rename_file must remove the old name");
+        assert_eq!(std::fs::read(root.join("final.txt")).unwrap(), b"hello");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod confirmation_gate_tests {
+    use super::*;
+
+    fn test_repositories() -> Arc<RepositoryStore> {
+        let storage: Arc<dyn crate::services::storage::StorageEngine> =
+            Arc::new(crate::services::storage::SqliteStorageEngine::open_in_memory_for_test().unwrap());
+        Arc::new(RepositoryStore::new(storage))
+    }
+
+    fn test_filesystem() -> Arc<dyn FileSystemService> {
+        Arc::new(crate::services::filesystem::LocalFileSystemService::new(
+            crate::kernel::events::EventBus::new(),
+        ))
+    }
+
+    #[test]
+    fn only_mutating_tools_require_confirmation() {
+        assert!(MoveFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+        assert!(CopyFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+        assert!(DeleteFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+        assert!(RenameFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+        assert!(WriteFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+        assert!(ConvertFileTool::new(test_repositories(), test_filesystem()).requires_confirmation());
+
+        assert!(!CalculatorTool.requires_confirmation());
+    }
+
+    #[test]
+    fn confirmation_summaries_never_leak_repository_id_or_raw_json() {
+        let args = serde_json::json!({
+            "repository_id": "00000000-0000-0000-0000-000000000001",
+            "from": "food.csv",
+            "to": "Documents/food.csv",
+            "path": "notes/plan.md",
+            "target_format": "pdf",
+        });
+
+        let move_tool = MoveFileTool::new(test_repositories(), test_filesystem());
+        let summary = move_tool.confirmation_summary(&args);
+        assert_eq!(summary, "Move food.csv to Documents/food.csv");
+        assert!(!summary.contains("repository_id"));
+        assert!(!summary.contains("00000000"));
+
+        let delete_tool = DeleteFileTool::new(test_repositories(), test_filesystem());
+        assert_eq!(delete_tool.confirmation_summary(&args), "Delete notes/plan.md");
+
+        let rename_tool = RenameFileTool::new(test_repositories(), test_filesystem());
+        assert_eq!(rename_tool.confirmation_summary(&args), "Rename food.csv to Documents/food.csv");
+
+        let convert_tool = ConvertFileTool::new(test_repositories(), test_filesystem());
+        assert_eq!(convert_tool.confirmation_summary(&args), "Convert notes/plan.md to PDF");
     }
 }
 

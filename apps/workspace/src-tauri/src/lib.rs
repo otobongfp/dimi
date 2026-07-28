@@ -72,6 +72,7 @@ pub fn run() {
             commands::conversations_delete,
             commands::messages_list,
             commands::chat_send,
+            commands::respond_to_tool_confirmation,
             commands::models_list_installed,
             commands::models_list_available,
             commands::models_download,

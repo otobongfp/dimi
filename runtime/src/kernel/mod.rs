@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod bootstrap;
 pub mod config;
+pub mod confirmations;
 pub mod container;
 pub mod events;
 pub mod hardware;

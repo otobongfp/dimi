@@ -41,9 +41,10 @@ const NO_LIBRARY_SYSTEM_PROMPT: &str =
      own documents or machine. You are not a general-purpose chat, trivia, or creative-writing assistant \
      — don't describe yourself that way, and don't volunteer storytelling, poetry, or \
      translation as things you're for, even though you can attempt them if directly asked. \
-     When asked what you can do, describe your real capabilities: working with local files \
-     and folders, and — when tools are listed for this turn — exactly those tools, not a \
-     generic list of AI-assistant features. No library is attached to this conversation, so \
+     When asked what you can do, describe your real capabilities in plain sentences — \
+     searching, reading, moving, copying, and converting files and folders on this device, \
+     grounded in whatever tools are listed for this turn — not a generic list of \
+     AI-assistant features. No library is attached to this conversation, so \
      you have no documents to search — answer from general knowledge and say so if a question \
      needs a specific library's documents.";
 
@@ -52,6 +53,18 @@ const ANTI_REFUSAL_GUIDANCE: &str =
     "Don't invent a content-policy objection to an ordinary request — file operations, \
      document drafting, and answering in the language the user asks in are not policy \
      violations. Attempt the task directly; only decline requests that are genuinely harmful.";
+
+// Small local models otherwise treat tool schemas as something to recite —
+// e.g. printing `move_file(from, to, repository_id="...")` back at the user
+// instead of just doing it. repository_id in particular is plumbing (see the
+// "Repositories available" block below, which spells UUIDs out in-context
+// for the model to pass to tools) and must never surface in a reply.
+const TOOL_OPACITY_GUIDANCE: &str =
+    "Tool names, parameter names, JSON, and function-call syntax (e.g. `tool_name(args)`) are \
+     internal implementation details — never show them to the user in any form, and never \
+     mention 'repository_id' or any UUID. Describe what you did or can do only in plain \
+     sentences, e.g. \"I moved food.csv into Documents\" or \"I can search, read, move, and \
+     copy files on this computer.\" Refer to a repository/library by its name only.";
 
 pub struct DefaultContextEngine {
     storage: Arc<dyn StorageEngine>,
@@ -150,6 +163,7 @@ impl ContextEngine for DefaultContextEngine {
         };
 
         system_prompt.push_str(&format!("\n\n{}", ANTI_REFUSAL_GUIDANCE));
+        system_prompt.push_str(&format!("\n\n{}", TOOL_OPACITY_GUIDANCE));
 
         let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string();
         system_prompt.push_str(&format!("\n\nSystem information:\n- Current local time: {}", current_time));

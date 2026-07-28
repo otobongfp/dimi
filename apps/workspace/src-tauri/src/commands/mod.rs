@@ -240,6 +240,18 @@ pub async fn chat_send(
 }
 
 #[tauri::command]
+pub async fn respond_to_tool_confirmation(
+    runtime: State<'_, Arc<Runtime>>,
+    confirmation_id: String,
+    approved: bool,
+) -> CmdResult<()> {
+    let confirmation_id: uuid::Uuid = confirmation_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    runtime
+        .respond_to_tool_confirmation(confirmation_id, approved)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn plugins_discover(runtime: State<'_, Arc<Runtime>>) -> CmdResult<Vec<PluginManifest>> {
     runtime.plugins_discover().await.map_err(|e| e.to_string())
 }

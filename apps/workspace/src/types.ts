@@ -132,11 +132,23 @@ export interface MessageSource {
   path: string;
 }
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
+export interface PlainChatMessage {
+  role: "system" | "user" | "assistant";
   content: string;
   sources?: MessageSource[];
 }
+
+export interface ToolConfirmationMessage {
+  role: "tool";
+  kind: "tool_confirmation";
+  confirmationId: string;
+  tool: string;
+  summary: string;
+  resolution: { approved: boolean } | null;
+  expired?: boolean;
+}
+
+export type ChatMessage = PlainChatMessage | ToolConfirmationMessage;
 
 export interface MessageRow {
   role: "system" | "user" | "assistant" | "tool";

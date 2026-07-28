@@ -23,6 +23,7 @@ pub mod topics {
     pub const PLUGIN_DISABLED: &str = "plugin:disabled";
     pub const TOOL_INVOKED: &str = "tool:invoked";
     pub const TOOL_RESULT: &str = "tool:result";
+    pub const TOOL_CONFIRMATION_REQUIRED: &str = "tool:confirmation_required";
     pub const JOB_QUEUED: &str = "job:queued";
     pub const JOB_STARTED: &str = "job:started";
     pub const JOB_COMPLETED: &str = "job:completed";

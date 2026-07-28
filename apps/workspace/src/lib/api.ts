@@ -70,6 +70,8 @@ export const dimi = {
   chat: {
     send: (args: { conversationId: string; message: string }) =>
       invoke<string>("chat_send", args),
+    respondToConfirmation: (confirmationId: string, approved: boolean) =>
+      invoke<void>("respond_to_tool_confirmation", { confirmationId, approved }),
   },
 
   models: {

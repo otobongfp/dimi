@@ -397,8 +397,21 @@ impl Runtime {
             storage,
             events: self.events.clone(),
             scheduler: self.scheduler.clone(),
+            confirmations: self.pending_confirmations.clone(),
         };
         Ok(run_chat_turn(deps, conversation_id, message))
+    }
+
+    /// Resolves a pending destructive-tool-call confirmation raised mid-turn
+    /// by `drive_chat_turn`. Errors if there's no live waiter for `id`
+    /// (already resolved, timed out, or from a previous app session) —
+    /// mirrors the unknown-tool error shape from `ToolEngine::invoke`.
+    pub fn respond_to_tool_confirmation(&self, id: uuid::Uuid, approved: bool) -> Result<()> {
+        if self.pending_confirmations.resolve(id, approved) {
+            Ok(())
+        } else {
+            Err(DimiError::NotFound(format!("pending confirmation: {id}")))
+        }
     }
 
     pub async fn plugins_discover(&self) -> Result<Vec<PluginManifest>> {

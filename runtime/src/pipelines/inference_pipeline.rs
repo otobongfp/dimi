@@ -2,6 +2,8 @@ use crate::common::{
     ContextRequest, ConversationId, DimiError, MessageId, ResourceClass, Result, SqlValue,
     TokenStream,
 };
+use crate::kernel::audit;
+use crate::kernel::confirmations::PendingConfirmations;
 use crate::kernel::events::{topics, EventBus};
 use crate::services::context::ContextEngine;
 use crate::services::inference::InferenceEngine;
@@ -10,9 +12,15 @@ use crate::services::storage::StorageEngine;
 use crate::services::telemetry::TelemetryService;
 use crate::services::tool::ToolEngine;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+
+// Fail-closed default for an unattended destructive-action gate: long enough
+// that a user reading the request isn't rushed, short enough that an
+// abandoned confirmation doesn't hold a tokio task open indefinitely.
+const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 // Was 6 — too low for real multi-step work (search several documents, read
 // each, compute totals, write a report, convert it). 20 still bounds a
@@ -44,6 +52,7 @@ pub struct ChatTurnDeps {
     pub storage: Arc<dyn StorageEngine>,
     pub events: EventBus,
     pub scheduler: Arc<TokioSchedulerService>,
+    pub confirmations: Arc<PendingConfirmations>,
 }
 
 pub fn run_chat_turn(deps: ChatTurnDeps, conversation_id: ConversationId, query: String) -> TokenStream {
@@ -143,6 +152,53 @@ async fn drive_chat_turn(
             Some((name, arguments)) => {
                 // Internal loop trace, not a real chat turn — invisible to the frontend.
                 persist_message(&deps.storage, conversation_id, "assistant", &full, false, &mut last_ts, None).await;
+
+                if deps.tools.requires_confirmation(&name) {
+                    let summary = deps.tools.confirmation_summary(&name, &arguments);
+                    let (confirmation_id, rx) = deps.confirmations.register();
+                    let pending_json = serde_json::json!({
+                        "kind": "tool_confirmation",
+                        "confirmation_id": confirmation_id,
+                        "tool": name,
+                        "summary": summary,
+                    });
+                    // Visible — this is what the approval card renders from.
+                    persist_message(&deps.storage, conversation_id, "tool", &pending_json.to_string(), true, &mut last_ts, None).await;
+                    deps.events.publish(topics::TOOL_CONFIRMATION_REQUIRED, pending_json);
+
+                    let approved = deps
+                        .confirmations
+                        .wait(confirmation_id, rx, CONFIRMATION_TIMEOUT)
+                        .await;
+                    let _ = audit::record(
+                        &deps.storage,
+                        "user",
+                        if approved { "tool.approved" } else { "tool.denied" },
+                        Some(&name),
+                    )
+                    .await;
+
+                    // A second, append-only row rather than mutating the
+                    // pending row above — nothing in this file ever UPDATEs
+                    // a persisted message; the frontend merges the two by
+                    // confirmation_id when rendering.
+                    let resolved_json = serde_json::json!({
+                        "kind": "tool_confirmation_resolved",
+                        "confirmation_id": confirmation_id,
+                        "approved": approved,
+                    });
+                    persist_message(&deps.storage, conversation_id, "tool", &resolved_json.to_string(), true, &mut last_ts, None).await;
+
+                    if !approved {
+                        let tool_message = serde_json::json!({
+                            "tool": name,
+                            "result": { "error": "user declined this action" }
+                        })
+                        .to_string();
+                        persist_message(&deps.storage, conversation_id, "tool", &tool_message, false, &mut last_ts, None).await;
+                        continue;
+                    }
+                }
 
                 deps.events.publish(
                     topics::TOOL_INVOKED,
