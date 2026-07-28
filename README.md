@@ -5,7 +5,7 @@
 <h1 align="center">Dimi</h1>
 
 <p align="center">
-  A private, local-first AI runtime that runs on your desktop and provides inference without internet connectivity — offline document Q&A, file operations, and drafting, running entirely on-device.
+  Dimi is a local-first AI runtime & desktop assistant that helps you search, read, organize, and manage the files on your own computer, draft reports and do meaningful work through chat, entirely offline and without sending your data anywhere.
 </p>
 
 <p align="center">
