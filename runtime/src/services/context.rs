@@ -236,6 +236,16 @@ impl ContextEngine for DefaultContextEngine {
                 Some(SqlValue::Text(s)) => s.clone(),
                 _ => continue,
             };
+            // Assistant rows are persisted with `<think>` reasoning intact
+            // now (so the UI can still show it after a reload) — strip it
+            // back out here so the model isn't re-fed its own past
+            // reasoning as if it were conversation content, and doesn't
+            // burn context budget on it.
+            let content = if role == "assistant" {
+                crate::pipelines::inference_pipeline::strip_think(&content)
+            } else {
+                content
+            };
             let cost = word_count(&content);
             if cost > budget {
                 break;

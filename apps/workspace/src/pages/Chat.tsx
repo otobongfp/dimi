@@ -525,7 +525,14 @@ export function Chat({
         setMessages((prev) => {
           const next = [...prev];
           const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, content: last.content + token };
+          // Always the assistant placeholder by construction (the
+          // confirmation-card listener below splices new cards in *before*
+          // this position specifically to preserve that) — the role check
+          // is just what lets TypeScript narrow away the ToolConfirmationMessage
+          // variant, which has no `content` field.
+          if (last.role !== "tool") {
+            next[next.length - 1] = { ...last, content: last.content + token };
+          }
           return next;
         });
       });

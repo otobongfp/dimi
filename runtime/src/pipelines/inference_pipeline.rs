@@ -17,21 +17,11 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 
-// Fail-closed default for an unattended destructive-action gate: long enough
-// that a user reading the request isn't rushed, short enough that an
-// abandoned confirmation doesn't hold a tokio task open indefinitely.
 const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-// Was 6 — too low for real multi-step work (search several documents, read
-// each, compute totals, write a report, convert it). 20 still bounds a
-// genuinely stuck loop; it stops being a ceiling real tasks bump into.
 const MAX_TOOL_ITERATIONS: usize = 20;
 const TOOL_CALL_OPEN: &str = "<tool_call>";
 
-/// How much of `text` is safe to forward right now, withholding any trailing
-/// substring that could still grow into a complete `pattern` match once more
-/// tokens arrive — so a tag split across streamed pieces is never partially
-/// leaked to the frontend before we know whether it's really forming.
 fn safe_stream_len(text: &str, pattern: &str) -> usize {
     let max_check = pattern.len().saturating_sub(1).min(text.len());
     for k in (1..=max_check).rev() {
@@ -72,10 +62,6 @@ async fn drive_chat_turn(
         conversation_id,
     };
     let mut last_ts = now_unix() - 1;
-    // Real file paths surfaced by tool results during this turn (e.g. a
-    // file_search hit, a read_file target) — accumulated across every
-    // tool-call iteration so the final answer can cite exactly the files
-    // the model actually touched, not filenames guessed out of its prose.
     let mut turn_sources: Vec<(String, String)> = Vec::new();
 
     for _ in 0..MAX_TOOL_ITERATIONS {
@@ -178,10 +164,6 @@ async fn drive_chat_turn(
                     )
                     .await;
 
-                    // A second, append-only row rather than mutating the
-                    // pending row above — nothing in this file ever UPDATEs
-                    // a persisted message; the frontend merges the two by
-                    // confirmation_id when rendering.
                     let resolved_json = serde_json::json!({
                         "kind": "tool_confirmation_resolved",
                         "confirmation_id": confirmation_id,
@@ -224,9 +206,6 @@ async fn drive_chat_turn(
             None => {
                 let answer = strip_think(&full);
                 if answer.is_empty() {
-                    // Nothing usable came out of this turn — keep the raw
-                    // output around for debugging, but there's no real
-                    // answer to show, so it stays invisible too.
                     persist_message(&deps.storage, conversation_id, "assistant", &full, false, &mut last_ts, None).await;
                     let _ = tx.send(Err(DimiError::Internal(
                         "the model produced a reasoning block but no answer for this turn — try rephrasing, or retry".into(),
@@ -235,12 +214,7 @@ async fn drive_chat_turn(
                     let sources = dedup_sources(turn_sources);
                     let sources_json = (!sources.is_empty())
                         .then(|| serde_json::to_string(&sources).unwrap_or_default());
-                    persist_message(&deps.storage, conversation_id, "assistant", &answer, true, &mut last_ts, sources_json.as_deref()).await;
-                    // No further send here — the raw text (think tags and
-                    // all) already streamed live via `tx_for_stream` above,
-                    // token by token, as it was generated. Sending `answer`
-                    // (the think-stripped version, used only for persistence)
-                    // again here would duplicate it in the frontend.
+                    persist_message(&deps.storage, conversation_id, "assistant", &full, true, &mut last_ts, sources_json.as_deref()).await;
                 }
                 return;
             }
@@ -282,10 +256,6 @@ async fn persist_message(
         .await;
 }
 
-/// Recursively walks a tool result looking for `abs_path` fields (every
-/// file-touching tool includes one — see `services::tool`), collecting
-/// `(display_name, absolute_path)` pairs regardless of how deeply nested
-/// they are (a single `path` field, or an array of search/list results).
 fn collect_sources(value: &serde_json::Value, out: &mut Vec<(String, String)>) {
     match value {
         serde_json::Value::Object(map) => {
@@ -347,7 +317,7 @@ fn extract_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
     Some((name, arguments))
 }
 
-fn strip_think(text: &str) -> String {
+pub(crate) fn strip_think(text: &str) -> String {
     let Some(start) = text.find("<think>") else {
         return text.trim().to_string();
     };
@@ -380,15 +350,11 @@ mod tests {
 
     #[test]
     fn safe_stream_len_sends_everything_before_a_trailing_partial_match() {
-        // "Sure! <tool" — "Sure! " is definitely not part of a tag, only the
-        // trailing "<tool" is still ambiguous.
         assert_eq!(safe_stream_len("Sure! <tool", "<tool_call>"), 6);
     }
 
     #[test]
     fn safe_stream_len_never_withholds_more_than_pattern_len_minus_one() {
-        // A string that merely *contains* the pattern early on, with plenty
-        // of unrelated trailing text, is entirely safe to send.
         let text = "<tool_call>{...}</tool_call> and then some more prose after it";
         assert_eq!(safe_stream_len(text, "<tool_call>"), text.len());
     }
